@@ -81,9 +81,9 @@ services:
     <<: *airflow-common
     command: webserver
     ports:
-      - "8080:8080"
+      - "8082:8082"
     healthcheck:
-      test: ["CMD", "curl", "--fail", "http://localhost:8080/health"]
+      test: ["CMD", "curl", "--fail", "http://localhost:8082/health"]
       interval: 30s
       timeout: 10s
       retries: 5
@@ -313,28 +313,6 @@ services:
       - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID}
       - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY}
     command: mlflow server --port 5500 --host 0.0.0.0 --backend-store-uri postgresql+psycopg2://mlflow:mlflow@postgres/mlflow --default-artifact-root s3://mlflow
-    networks:
-      - fraud-detection
-
-  producer:
-    build: ./producer
-    env_file: .env
-    deploy:
-      replicas: 2
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-    networks:
-      - fraud-detection
-
-  inference:
-    build: ./inference
-    env_file: .env
-    volumes:
-      - ./models:/app/models
-      - ./config.yaml:/app/config.yaml
-      - ./env:/app/.env
     networks:
       - fraud-detection
 
