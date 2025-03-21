@@ -11,15 +11,15 @@ import logging
 from confluent_kafka import Producer
 
 from faker import Faker 
-from jsonschema.exceptions import ValidationError, validate, FormatChecker
-from jsonschema import validate
+from jsonschema import validate, FormatChecker
+from jsonschema.exceptions import ValidationError
 
 logging.basicConfig(
     format="%(asctime)s - %(module)s - %(message)s",
     level=logging.INFO
 )
 
-logger = logging.getlogger(__name__)
+logger = logging.getLogger(__name__)
 
 load_dotenv(dotenv_path="/app/.env")
 
@@ -41,12 +41,12 @@ TRANSACTION_SCHEMA = {
         "location": {"type": "string", "pattern": "^[A-Z]{2}$"},
         "is_fraud": {"type": "integer", "minimum": 0, "maximum": 1}
     },
-    "required": ["transaction_id", "user_id", "amount", "currency", "timestamp"]
+    "required": ["transaction_id", "user_id", "amount", "currency", "timestamp", "is_fraud"]
 }
 
 class TransactionProducer():
     def __init__(self):
-        self.bootsrap_servers = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
+        self.bootstrap_servers = os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092')
         self.kafka_username = os.getenv('KAFKA_USERNAME')
         self.kafka_password = os.getenv('KAFKA_PASSWORD')
         self.topic = os.getenv('KAFKA_TOPIC', 'transactions')
@@ -54,7 +54,7 @@ class TransactionProducer():
 
         # confluent kafka config
         self.producer_config = {
-            'bootsrap.servers': self.bootsrap_servers,
+            'bootstrap.servers': self.bootstrap_servers,
             'client.id': 'transaction-producer',
             'compression.type': 'gzip',
             'linger.ms': '5',
@@ -76,19 +76,19 @@ class TransactionProducer():
             self.producer = Producer(self.producer_config)
             logger.info("Confluent Kafka producer is initialized!*************")
         except Exception as e:
-            logger.error('Failed to initialize confluent kafka producer: {str(e)}')
+            logger.error(f'Failed to initialize confluent kafka producer: {str(e)}')
             raise e
         
         self.compromised_users = set(random.sample(range(1000, 9999), 50)) # 0.5% of total users
         self.high_risk_merchants = ['Quickcash', 'GlobalDigital', 'FastMoneyX']
-        self.fraud_pattern_weigths = {
+        self.fraud_pattern_weights = {
             'account_takeover': 0.4, # fraud cases 40%
             'card_testing': 0.3, # 30%
             'merchant_collusion': 0.2, # 20%
             'geo_anomaly': 0.1 # 10%
         }
 
-        # configure graceful shutdown
+        # configure graceful shutdown
         signal.signal(signal.SIGINT, self.shutdown)
         signal.signal(signal.SIGTERM, self.shutdown)
 
@@ -107,16 +107,18 @@ class TransactionProducer():
                 schema=TRANSACTION_SCHEMA,
                 format_checker=FormatChecker()
             )
+            return True
         except ValidationError as e:
             logger.error(f'Invalid transaction: {e.message}')
+            return False
 
             
     def generate_transaction(self) -> Optional[Dict[str, Any]]:
         transaction = {
             'transaction_id': fake.uuid4(),
             'user_id': random.randint(1000, 9999),
-            'amount': round(fake.pyflaot(min_value = 0.01, max_value = 10000), 2),
-            'currency': '€',
+            'amount': round(random.uniform(0.01, 10000), 2),
+            'currency': 'EUR',
             'merchant': fake.company(),
             'timestamp': (datetime.now(timezone.utc) + timedelta(seconds=random.randint(-300, 3000))).isoformat(),
             'location': fake.country_code(),
@@ -131,13 +133,13 @@ class TransactionProducer():
         if user_id in self.compromised_users and amount > 500:
             if random.random() < 0.3: # 30% change of fraud in compromised accounts
                 is_fraud = 1
-                transaction['amount'] = random.uniform()
+                transaction['amount'] = round(random.uniform(500, 10000), 2)
                 transaction['merchant'] = random.choice(self.high_risk_merchants)
         
 
         # card testing
         if not is_fraud and amount < 2.0:
-            # simulating rapd transactions
+            # simulating rapid transactions
             if user_id % 1000 == 0 and random.random() < 0.25:
                 is_fraud = 1
                 transaction['amount'] = round(random.uniform(0.01, 2), 2)
@@ -148,7 +150,7 @@ class TransactionProducer():
         if not is_fraud and merchant in self.high_risk_merchants:
             if amount > 3000 and random.random() < 0.15:
                 is_fraud = 1
-                transaction['amount'] = random.uniform(300, 1500)
+                transaction['amount'] = round(random.uniform(300, 1500), 2)
 
 
         # geographic anomalies
@@ -157,16 +159,17 @@ class TransactionProducer():
                 is_fraud = 1
                 transaction['location'] = random.choice(['CN', 'RS', 'GB'])
 
-        # random fraud (0.1 - 0.3%)
+        # random fraud (0.1 - 0.3%)
         if not is_fraud and random.random() < 0.002:
             is_fraud = 1
-            transaction['amount'] = random.uniform(100, 2000)
+            transaction['amount'] = round(random.uniform(100, 2000), 2)
 
         # ensure that final fraud rate is between 1-2%
         transaction['is_fraud'] = is_fraud if random.random() < 0.985 else 0
 
         if self.validate_transaction(transaction):
             return transaction
+        return None
 
 
 
@@ -180,7 +183,7 @@ class TransactionProducer():
                 self.topic,
                 key=transaction['transaction_id'],
                 value=json.dumps(transaction),
-                callback=self.delivery_post
+                callback=self.delivery_report
             )
 
             self.producer.poll(0)  # trigger callbacks
@@ -189,15 +192,15 @@ class TransactionProducer():
             logger.error(f'Error producing message: {str(e)}') 
             return False
 
-    def run_continous_production(self, interval: float=0.0):
-        """" Run continous message production"""
+    def run_continuous_production(self, interval: float=0.0):
+        """" Run continuous message production"""
         self.running = True 
         logger.info('Starting producer for topic %s...', self.topic)
 
         try:
             while self.running:
                 if self.send_transaction():
-                        time.sleep(interval)
+                    time.sleep(interval)
         finally: 
             self.shutdown()
 
@@ -213,4 +216,4 @@ class TransactionProducer():
 
 if __name__ == "__main__":
     producer = TransactionProducer()
-    producer.run_continous_production()
+    producer.run_continuous_production()
