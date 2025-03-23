@@ -7,28 +7,28 @@ mlflow:
   bucket: "mlflow"
 
 kafka:
-  bootstrap_servers: "pkc-41wq6.eu-west-2.aws.confluent.cloud:9092"
-  username: "XGISOSVJLGK43N6I"
-  password: "MdMzzd4Kk87IdtczK1K2pvOweKQKJ8h9bcdD53w9WOhI25kHMjZvVn/bGH3DsmAL"
+  bootstrap_servers: "pkc-619z3.us-east1.gcp.confluent.cloud:9092"
+  username: "HC2RCAPBSQRLLWAR"
+  password: "GzRxh104iyOdXCecOAAiV2G5N12t181v1FUTiPxdLt85i801igmUPcTEKUBE0xX4"
   topic: "transactions"
   output_topic: "fraud_predictions"
   security_protocol: 'SASL_SSL'
 
-model:
-  test_size: 0.2
-  seed: 42
-  params:
-    n_estimators: 300
-    learning_rate: 0.05
-    max_depth: 5
-    subsample: 0.8
-    colsample_bytree: 0.8
-    scale_pos_weight: 1
-    tree_method: "hist"
-  path: "/app/models/fraud_detection_model.pkl"
+#model:
+ # test_size: 0.2
+ # seed: 42
+  #params:
+  #  n_estimators: 300
+  #  learning_rate: 0.05
+  #  max_depth: 5
+   # subsample: 0.8
+  #  colsample_bytree: 0.8
+  #  scale_pos_weight: 1
+  #  tree_method: "hist"
+  #path: "/app/models/fraud_detection_model.pkl"
 
-spark:
-  app_name: "FraudDetectionInference"
-  packages: "org.mlflow:mlflow-spark:2.6.0,com.google.guava:guava:30.1.1-jre,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4,org.apache.hadoop:hadoop-aws:3.3.0,com.amazonaws:aws-java-sdk:1.11.469"
-  shuffle_partition: 200
-  checkpoint_location: 'checkpoints'
+#spark:
+ # app_name: "FraudDetectionInference"
+ # packages: "org.mlflow:mlflow-spark:2.6.0,com.google.guava:guava:30.1.1-jre,org.apache.spark:spark-sql-kafka-0-10_2.12:3.5.4,org.apache.hadoop:hadoop-aws:3.3.0,com.amazonaws:aws-java-sdk:1.11.469"
+ # shuffle_partition: 200
+ # checkpoint_location: 'checkpoints'
