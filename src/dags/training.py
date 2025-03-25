@@ -22,6 +22,7 @@ from xgboost import XGBClassifier
 from imblearn.pipeline import Pipeline as ImbPipeline
 import joblib
 
+# Configure dual logging to file and stdout with structured format
 logging.basicConfig(
     format="%(asctime)s - %(levelname)s - %(module)s - %(message)s",
     level=logging.INFO,
@@ -32,51 +33,67 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
 class FraudDetectionTraining:
+
     def __init__(self, config_path='/app/config.yaml'):
+        # Environment hardening for containerized deployments
         os.environ['GIT_PYTHON_REFRESH'] = 'quiet'
         os.environ['GIT_PYTHON_GIT_EXECUTABLE'] = '/usr/bin/git'
+
+        # Load environment variables before config to allow overrides
         load_dotenv(dotenv_path='/app/.env')
+
+        # Configuration lifecycle management
         self.config = self._load_config(config_path)
+
+        # Security-conscious credential handling
         os.environ.update({
             'AWS_ACCESS_KEY_ID': os.getenv('AWS_ACCESS_KEY_ID'),
             'AWS_SECRET_ACCESS_KEY': os.getenv('AWS_SECRET_ACCESS_KEY'),
             'AWS_S3_ENDPOINT_URL': self.config['mlflow']['s3_endpoint_url']
         })
+
+        # Pre-flight system checks
         self._validate_environment()
+
+        # MLflow configuration for experiment tracking
         mlflow.set_tracking_uri(self.config['mlflow']['tracking_uri'])
         mlflow.set_experiment(self.config['mlflow']['experiment_name'])
-        
+
     def _load_config(self, config_path: str) -> dict:
         try:
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
-            logger.info('Configuration loaded correctly')
+            logger.info('Configuration loaded successfully')
             return config
         except Exception as e:
-            logger.error('Failed to load: %s', str(e))
+            logger.error('Failed to load configuration: %s', str(e))
             raise
-            
+
     def _validate_environment(self):
-        required_vars = ['KAFKA_BOOTSTRAP_SERVERS', 'KAFKA_PASSWORD', 'KAFKA_USERNAME']
+        required_vars = ['KAFKA_BOOTSTRAP_SERVERS', 'KAFKA_USERNAME', 'KAFKA_PASSWORD']
         missing = [var for var in required_vars if not os.getenv(var)]
         if missing:
-            raise ValueError(f'Missing required environment variables {missing}')
-       
+            raise ValueError(f'Missing required environment variables: {missing}')
+
         self._check_minio_connection()
-        
+
     def _check_minio_connection(self):
         try:
             s3 = boto3.client(
                 's3',
-                endpoint_url=self.config['mlflow']['s3_endpoint_url'], 
+                endpoint_url=self.config['mlflow']['s3_endpoint_url'],
                 aws_access_key_id=os.getenv('AWS_ACCESS_KEY_ID'),
                 aws_secret_access_key=os.getenv('AWS_SECRET_ACCESS_KEY')
             )
+
             buckets = s3.list_buckets()
             bucket_names = [b['Name'] for b in buckets.get('Buckets', [])]
             logger.info('Minio connection verified. Buckets: %s', bucket_names)
+
             mlflow_bucket = self.config['mlflow'].get('bucket', 'mlflow')
+
             if mlflow_bucket not in bucket_names:
                 s3.create_bucket(Bucket=mlflow_bucket)
                 logger.info('Created missing MLFlow bucket: %s', mlflow_bucket)
@@ -90,12 +107,13 @@ class FraudDetectionTraining:
 
             consumer = KafkaConsumer(
                 topic,
-                bootstrap_servers=self.config['kafka']['bootstrap_servers'],
+                bootstrap_servers=self.config['kafka']['bootstrap_servers'].split(','),
                 security_protocol='SASL_SSL',
                 sasl_mechanism='PLAIN',
                 sasl_plain_username=self.config['kafka']['username'],
                 sasl_plain_password=self.config['kafka']['password'],
                 value_deserializer=lambda x: json.loads(x.decode('utf-8')),
+                auto_offset_reset='earliest',
                 consumer_timeout_ms=self.config['kafka'].get('timeout', 10000)
             )
 
@@ -104,78 +122,79 @@ class FraudDetectionTraining:
 
             df = pd.DataFrame(messages)
             if df.empty:
-                raise ValueError('Empty Kafka topic')
-            
+                raise ValueError('No messages received from Kafka.')
+
+            # Temporal data standardization
             df['timestamp'] = pd.to_datetime(df['timestamp'], utc=True)
-                                             
+
             if 'is_fraud' not in df.columns:
-                raise ValueError('Fraud label (is_fraud) is missing')    
-            
+                raise ValueError('Fraud label (is_fraud) missing from Kafka data')
+
+            # Data quality monitoring point
             fraud_rate = df['is_fraud'].mean() * 100
-            logger.info('Kafka topic read correctly with fraud rate: %.2f%%', fraud_rate)
+            logger.info('Kafka data read successfully with fraud rate: %.2f%%', fraud_rate)
 
             return df
-
         except Exception as e:
-            logger.error('Error reading topic from kafka: %s', str(e), exc_info=True)
+            logger.error('Failed to read data from Kafka: %s', str(e), exc_info=True)
             raise
 
     def create_features(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.sort_values(['user_id', 'timestamp']).copy()
 
-        # ---- temporal features ----
-        # hour of the txn
+        # ---- Temporal Feature Engineering ----
+        # Captures time-based fraud patterns (e.g., nighttime transactions)
         df['transaction_hour'] = df['timestamp'].dt.hour
-        # flags txns happening at night (22:00 - 5:00)
         df['is_night'] = ((df['transaction_hour'] >= 22) | (df['transaction_hour'] < 5)).astype(int)
-        # flag txns happenig on weekends (saturdays=5 and sundays=6)
         df['is_weekend'] = (df['timestamp'].dt.dayofweek >= 5).astype(int)
-        #txn day
         df['transaction_day'] = df['timestamp'].dt.day
 
-        # -- behavioural features
+        # -- Behavioral Feature Engineering --
+        # Rolling window captures recent user activity patterns
         df['user_activity_24h'] = df.groupby('user_id', group_keys=False).apply(
             lambda g: g.rolling('24h', on='timestamp', closed='left')['amount'].count().fillna(0)
         )
 
-        # -- monetary feature -- 
+        # -- Monetary Feature Engineering --
+        # Relative amount detection compared to user's historical pattern
         df['amount_to_avg_ratio'] = df.groupby('user_id', group_keys=False).apply(
             lambda g: (g['amount'] / g['amount'].rolling(7, min_periods=1).mean()).fillna(1.0)
         )
 
-        # -- merchant feature --
-        high_risk_merchant = self.config.get('high_risk_merchants', ['Quickcash', 'GlobalDigital', 'FastMoneyX'])
-        df['merchant_risk'] = df['merchant'].isin(high_risk_merchant).astype(int)
+        # -- Merchant Risk Profiling --
+        # External risk intelligence integration point
+        high_risk_merchants = self.config.get('high_risk_merchants', ['QuickCash', 'GlobalDigital', 'FastMoneyX'])
+        df['merchant_risk'] = df['merchant'].isin(high_risk_merchants).astype(int)
 
-        features_cols = [
+        feature_cols = [
             'amount', 'is_night', 'is_weekend', 'transaction_day', 'user_activity_24h',
             'amount_to_avg_ratio', 'merchant_risk', 'merchant'
         ]
 
+        # Schema validation guard
         if 'is_fraud' not in df.columns:
             raise ValueError('Missing target column "is_fraud"')
-        
-        return df[features_cols + ['is_fraud']]
+
+        return df[feature_cols + ['is_fraud']]
 
     def train_model(self):
-        try:
-            logger.info('Starting model training')
-            
-            # raw transactions from kafka as dataframe
-            df = self.read_from_kafka()
 
-            # start faeture engineering 
+        try:
+            logger.info('Starting model training process')
+
+            # Data ingestion and feature engineering
+            df = self.read_from_kafka()
             data = self.create_features(df)
 
-            # split the data into features (X) and target (Y)
+            # Train/Test split with stratification
             X = data.drop(columns=['is_fraud'])
             y = data['is_fraud']
 
+            # Class imbalance safeguards
             if y.sum() == 0:
                 raise ValueError('No positive samples in training data')
-            
             if y.sum() < 10:
-                logger.warning('Low positive samples: %d. Consider data augmentation', y.sum())
+                logger.warning('Low positive samples: %d. Consider additional data augmentation', y.sum())
 
             X_train, X_test, y_train, y_test = train_test_split(
                 X, y,
@@ -184,7 +203,9 @@ class FraudDetectionTraining:
                 random_state=self.config['model'].get('seed', 42)
             )
 
+            # MLflow experiment tracking context
             with mlflow.start_run():
+                # Dataset metadata logging
                 mlflow.log_metrics({
                     'train_samples': X_train.shape[0],
                     'positive_samples': int(y_train.sum()),
@@ -192,30 +213,28 @@ class FraudDetectionTraining:
                     'test_samples': X_test.shape[0]
                 })
 
-                preprocessor = ColumnTransformer(
-                    [
-                        ('merchant_encoder', OrdinalEncoder(
-                            handle_unknown='use_encoded_value', unknown_value=-1, dtype=np.float32
-                        ), ['merchant'])
-                    ], remainder='passthrough'
-                )
+                # Categorical feature preprocessing
+                preprocessor = ColumnTransformer([
+                    ('merchant_encoder', OrdinalEncoder(
+                        handle_unknown='use_encoded_value', unknown_value=-1, dtype=np.float32
+                    ), ['merchant'])
+                ], remainder='passthrough')
 
+                # XGBoost configuration with efficiency optimizations
                 xgb = XGBClassifier(
-                    eval_metric='aucpr',
+                    eval_metric='aucpr',  # Optimizes for precision-recall area
                     random_state=self.config['model'].get('seed', 42),
                     reg_lambda=1.0,
                     n_estimators=self.config['model']['params']['n_estimators'],
                     n_jobs=-1,
-                    tree_method=self.config['model'].get('tree_method', 'hist')
+                    tree_method=self.config['model'].get('tree_method', 'hist')  # GPU-compatible
                 )
 
-                # -- pipeline construction --
-                #preprocessing
-                #class imbalance handling with SMOTE
-                #prediction with xghboost classifier
-                pipeline = ImbPipeline ([
+                # Imbalanced learning pipeline
+                pipeline = ImbPipeline([
                     ('preprocessor', preprocessor),
-                    ('smote', SMOTE(random_state=self.config['model'].get('seed', 42))), ('classifier', xgb)
+                    ('smote', SMOTE(random_state=self.config['model'].get('seed', 42))),
+                    ('classifier', xgb)
                 ], memory='./cache')
 
                 # Hyperparameter search space design

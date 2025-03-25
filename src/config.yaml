@@ -7,10 +7,10 @@ mlflow:
   bucket: "mlflow"
 
 kafka:
-  bootstrap_servers: "pkc-619z3.us-east1.gcp.confluent.cloud:9092"
-  username: "HC2RCAPBSQRLLWAR"
-  password: "GzRxh104iyOdXCecOAAiV2G5N12t181v1FUTiPxdLt85i801igmUPcTEKUBE0xX4"
-  topic: "transactions"
+  bootstrap_servers: "pkc-41wq6.eu-west-2.aws.confluent.cloud:9092"                    #example of credentials deployed on Confluent cloud(not real credentials)
+  username: "PYMYHANCXSI3UPOB"                                                         
+  password: "jm498u5sLY5hqX5SBcicu30VWgsns/zAhR+jSX1xccSqZAPxWVPMCzw1dat1RlaF"       
+  topic: "transactions" 
   output_topic: "fraud_predictions"
   security_protocol: 'SASL_SSL'
 
@@ -18,12 +18,12 @@ model:
   test_size: 0.2
   seed: 42
   params:
-  n_estimators: 300
-  learning_rate: 0.05
-  max_depth: 5
-  subsample: 0.8
-  colsample_bytree: 0.8
-  scale_pos_weight: 1
+    n_estimators: 300
+    learning_rate: 0.05
+    max_depth: 5
+    subsample: 0.8
+    colsample_bytree: 0.8
+    scale_pos_weight: 1
   tree_method: "hist"
   path: "/app/models/fraud_detection_model.pkl"
 
